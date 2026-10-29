@@ -1,0 +1,8 @@
+# Never commit anything personal.
+*.env.local
+config.toml
+config.toml.*
+*.log
+*.img
+*.img.xz
+.fs2-private-terms

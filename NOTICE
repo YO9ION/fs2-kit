@@ -1,0 +1,11 @@
+FS2 install kit
+This repository contains installation scripts, a configuration template and documentation only.
+The FS2 program itself is distributed as a ready-made binary on the Releases page.
+
+FS2 is based on the open-source projects:
+  - tetra-bluestation by Midnight Blue (Apache License 2.0)
+  - FlowStation by razvanzeces (Apache License 2.0)
+The Apache License 2.0 applies to those works; keep their copyright notices.
+
+The SX1255 driver (SoapySX, https://github.com/tejeez/sxxcvr) is NOT distributed here.
+The installer downloads it from its author at install time under its own license.
