@@ -44,6 +44,10 @@ detect_sdr() {
 install_binary() {
   say "Installing the FS2 program"
   install -d -m 755 "$PREFIX" "$PREFIX/log" "$PREFIX/share"
+  install -d -m 755 "$PREFIX/announcements" "$PREFIX/wap"
+  # The program keeps some files (history, coverage points, announcements, WAP page, Proximity
+  # minimum distance) under the fixed path /root/flowstation. Point that at the install folder.
+  if [ ! -e /root/flowstation ] && [ ! -L /root/flowstation ]; then ln -s "$PREFIX" /root/flowstation; fi
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   if [ -n "$LOCAL_BINARY" ]; then
     cp "$LOCAL_BINARY" "$tmp/fs2.bin"
@@ -61,6 +65,10 @@ install_binary() {
   install -m 755 "$tmp/fs2.bin" "$PREFIX/fs2.new"
   [ -f "$PREFIX/fs2" ] && cp -f "$PREFIX/fs2" "$PREFIX/fs2.prev"
   mv -f "$PREFIX/fs2.new" "$PREFIX/fs2"
+  # Address the dashboard Update button checks (never overwrite an address the user changed).
+  if [ -n "${FS2_UPDATE_URL:-}" ] && [ ! -s "$PREFIX/fs2-update.url" ]; then
+    printf '%s\n' "$FS2_UPDATE_URL" > "$PREFIX/fs2-update.url"
+  fi
 }
 
 if [ "$BINARY_ONLY" -eq 1 ]; then
