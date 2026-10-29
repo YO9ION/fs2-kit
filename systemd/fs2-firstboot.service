@@ -1,0 +1,13 @@
+[Unit]
+Description=FS2 first boot (create new SSH host keys)
+ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+Before=ssh.service sshd.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ssh-keygen -A
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

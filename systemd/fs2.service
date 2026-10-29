@@ -1,0 +1,26 @@
+[Unit]
+Description=FS2 TETRA base station
+After=network.target systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/fs2
+ExecStartPre=/bin/mkdir -p /opt/fs2/log
+ExecStart=/usr/bin/chrt -f 99 /opt/fs2/fs2 /opt/fs2/config.toml
+Restart=always
+RestartSec=2
+
+# Realtime limits (needed for steady RF timing)
+LimitRTPRIO=99
+LimitMEMLOCK=infinity
+LimitNICE=-20
+Nice=-20
+IOSchedulingClass=realtime
+IOSchedulingPriority=0
+
+StandardOutput=append:/opt/fs2/log/tetra_full.log
+StandardError=append:/opt/fs2/log/tetra_full_error.log
+
+[Install]
+WantedBy=multi-user.target

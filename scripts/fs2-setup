@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""fs2-setup - create /opt/fs2/config.toml from the template (asks a few questions)."""
+import argparse, os, re, secrets, shutil, socket, subprocess, sys, time
+
+TEMPLATE_DIRS = ["/opt/fs2/share", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config")]
+
+SDR_LINES = {
+    "sx": "sample_rate = 600000\nrx_gain_lna = 42.0\nrx_gain_pga = 16.0\ntx_gain_dac = 6.0\ntx_gain_mixer = 60.0",
+    "pluto": 'device = "driver=plutosdr"\n# Gains: list the names with  SoapySDRUtil --probe  and add lines like  rx_gain_pga = 40.0',
+    "lime": 'device = "driver=lime"\n# Gains: list the names with  SoapySDRUtil --probe  and add lines like  rx_gain_lna = 30.0',
+}
+
+def find_template():
+    for d in TEMPLATE_DIRS:
+        p = os.path.join(d, "config.template.toml")
+        if os.path.isfile(p):
+            return p
+    sys.exit("config.template.toml not found")
+
+def ask(label, default=None, tty=True):
+    if not tty:
+        if default is None:
+            sys.exit("Missing value for: " + label)
+        return str(default)
+    suffix = " [%s]" % default if default not in (None, "") else ""
+    while True:
+        v = input("%s%s: " % (label, suffix)).strip()
+        if v:
+            return v
+        if default not in (None, ""):
+            return str(default)
+
+def system_timezone():
+    try:
+        return open("/etc/timezone").read().strip() or "UTC"
+    except OSError:
+        return "UTC"
+
+def compute_carrier(tx_hz):
+    band = int(tx_hz // 100_000_000)
+    off = tx_hz - band * 100_000_000
+    if off % 25_000:
+        sys.exit("TX frequency must be a multiple of 25 kHz.")
+    carrier = off // 25_000
+    if not (0 <= carrier <= 4095):
+        sys.exit("TX frequency out of range for a TETRA carrier number.")
+    return band, int(carrier)
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--sdr", choices=sorted(SDR_LINES), help="radio board type")
+    ap.add_argument("--tx-mhz"); ap.add_argument("--rx-mhz")
+    ap.add_argument("--mcc"); ap.add_argument("--mnc")
+    ap.add_argument("--la"); ap.add_argument("--cc")
+    ap.add_argument("--timezone"); ap.add_argument("--dash-user"); ap.add_argument("--dash-pass")
+    ap.add_argument("--out", default="/opt/fs2/config.toml")
+    ap.add_argument("--yes-legal", action="store_true", help="confirm you may legally transmit on these frequencies")
+    ap.add_argument("--non-interactive", action="store_true")
+    a = ap.parse_args()
+    tty = sys.stdin.isatty() and not a.non_interactive
+
+    print("\nFS2 setup. Press Enter to accept the value in [brackets].\n")
+    sdr = a.sdr or ask("Radio board (sx / pluto / lime)", "sx", tty)
+    if sdr not in SDR_LINES:
+        sys.exit("Unknown board: " + sdr)
+    tx = float(a.tx_mhz or ask("Transmit (downlink) frequency in MHz, e.g. 438.025", None, tty))
+    rx = float(a.rx_mhz or ask("Receive (uplink) frequency in MHz", "%.6f" % (tx - 5.0), tty))
+    tx_hz, rx_hz = int(round(tx * 1e6)), int(round(rx * 1e6))
+    band, carrier = compute_carrier(tx_hz)
+    if tx_hz - rx_hz != 5_000_000:
+        print("\nWARNING: this template assumes a 5 MHz duplex spacing (RX = TX - 5 MHz).")
+        print("Your radios and config must agree; edit duplex_spacing in the dashboard Config page if needed.\n")
+    mcc = a.mcc or ask("Mobile country code (MCC)", "901", tty)
+    mnc = a.mnc or ask("Mobile network code (MNC)", "9999", tty)
+    la = a.la or ask("Location area", "1", tty)
+    cc = a.cc or ask("Colour code (0-63)", "1", tty)
+    tz = a.timezone or ask("Timezone", system_timezone(), tty)
+    user = a.dash_user or ask("Dashboard user name", "admin", tty)
+    password = a.dash_pass or secrets.token_urlsafe(12)
+    for name, v in (("MCC", mcc), ("MNC", mnc), ("location area", la), ("colour code", cc)):
+        if not re.fullmatch(r"\d{1,5}", v):
+            sys.exit("%s must be a number." % name)
+    if not re.fullmatch(r"[A-Za-z0-9_./+-]+", tz):
+        sys.exit("Invalid timezone.")
+    for name, v in (("user name", user), ("password", password)):
+        if not re.fullmatch(r"[A-Za-z0-9_.@-]+", v):
+            sys.exit("Dashboard %s may only use letters, digits and _ . @ -" % name)
+
+    if not a.yes_legal:
+        print("\nTransmitting on radio frequencies needs a licence or permission in most countries.")
+        if not tty:
+            sys.exit("Pass --yes-legal to confirm.")
+        if input('Type "yes" to confirm you may legally use these frequencies and power: ').strip().lower() != "yes":
+            sys.exit("Stopped. Nothing was written.")
+
+    text = open(find_template()).read()
+    vals = {"TX_HZ": tx_hz, "RX_HZ": rx_hz, "SDR_LINES": SDR_LINES[sdr], "MCC": mcc, "MNC": mnc,
+            "FREQ_BAND": band, "MAIN_CARRIER": carrier, "LA": la, "CC": cc, "TZ": tz,
+            "DASH_USER": user, "DASH_PASS": password}
+    for k, v in vals.items():
+        text = text.replace("@@%s@@" % k, str(v))
+    if "@@" in text:
+        sys.exit("Unfilled placeholder left in template.")
+
+    out = a.out
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    if os.path.exists(out):
+        bak = "%s.bak-%s" % (out, time.strftime("%Y%m%d-%H%M%S"))
+        shutil.copy2(out, bak)
+        print("Existing config saved as", bak)
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    fb = out + ".fallback"
+    if not os.path.exists(fb):
+        shutil.copy2(out, fb)
+        os.chmod(fb, 0o600)
+    try:
+        ip = subprocess.run(["hostname", "-I"], capture_output=True, text=True).stdout.split()[0]
+    except Exception:
+        ip = socket.gethostname()
+    print("\nConfig written to %s" % out)
+    print("Dashboard:  http://%s:8080   user: %s   password: %s" % (ip, user, password))
+    print("Write the password down now; it is stored only in the config file.")
+    print("Start / restart:  sudo systemctl restart fs2")
+
+if __name__ == "__main__":
+    main()
