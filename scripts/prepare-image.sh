@@ -10,9 +10,9 @@ read -r -p 'Type WIPE to continue: ' a </dev/tty
 systemctl stop fs2 2>/dev/null || true
 systemctl disable fs2-firstboot.service >/dev/null 2>&1 || true
 
-# FS2: keep only the program and the config template
+# FS2: keep only the program, its update address/key and the share folder
 if [ -d /opt/fs2 ]; then
-  find /opt/fs2 -mindepth 1 -maxdepth 1 ! -name fs2 ! -name share -exec rm -rf {} +
+  find /opt/fs2 -mindepth 1 -maxdepth 1 ! -name fs2 ! -name share ! -name fs2-update.url ! -name fs2-update.pubkey -exec rm -rf {} +
   install -d /opt/fs2/log
 fi
 

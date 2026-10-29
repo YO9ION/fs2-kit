@@ -63,3 +63,22 @@ updated by the button.
 A station that was installed before this feature, or from an image made earlier, needs the program once
 from the GitHub release (`sudo bash install.sh --binary-only`) and the address file:
 `echo "<FS2_UPDATE_URL>" | sudo tee /opt/fs2/fs2-update.url`.
+
+## Config: first install and later changes (maintainer)
+
+- The full `config.toml` template is **not** in this repository. It lives on the update server and is signed.
+  Publish it by copying the file to `/root/fs2-signing/config.template.toml` on the build host and running
+  `/root/fs2-config-publish.sh`. `fs2-setup` downloads it, checks the signature, fills in the user's own values
+  (frequencies, location, dashboard login, ...) and writes `fs2-config.level`.
+- To change the config of every station later, add a change and publish it:
+
+      /root/fs2-config-op.py default cell_info some_new_key 42      # add the line only if missing
+      /root/fs2-config-op.py set     cell_info hangtime_secs 2       # add or change the line
+      /root/fs2-config-op.py remove  cell_info old_key                # delete the line
+      /root/fs2-config-publish.sh
+
+  When a user presses Update, the signed list is downloaded and applied once at the next start. Only the listed
+  lines are touched; the user's own values, comments and everything else stay. The result is checked with the
+  real config parser first; if anything is wrong the old config is kept (`config.toml.pre-patch` is the backup,
+  `fs2-config-patch.rejected` the refused list).
+- Keep the template file in step with the changes (new installs get the template, existing stations get the changes).

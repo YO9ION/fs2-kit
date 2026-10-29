@@ -2,7 +2,7 @@
 """fs2-setup - create /opt/fs2/config.toml from the template (asks a few questions)."""
 import argparse, os, re, secrets, shutil, socket, subprocess, sys, time
 
-TEMPLATE_DIRS = ["/opt/fs2/share", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config")]
+PREFIX = os.environ.get("FS2_PREFIX", "/opt/fs2")
 
 SDR_LINES = {
     "sx": "sample_rate = 600000\nrx_gain_lna = 42.0\nrx_gain_pga = 16.0\ntx_gain_dac = 6.0\ntx_gain_mixer = 60.0",
@@ -10,12 +10,44 @@ SDR_LINES = {
     "lime": 'device = "driver=lime"\n# Gains: list the names with  SoapySDRUtil --probe  and add lines like  rx_gain_lna = 30.0',
 }
 
-def find_template():
-    for d in TEMPLATE_DIRS:
-        p = os.path.join(d, "config.template.toml")
-        if os.path.isfile(p):
-            return p
-    sys.exit("config.template.toml not found")
+def fetch_template():
+    """Download the config template from the update server and check its Ed25519 signature.
+    Returns (text, level). There is no copy of the template on GitHub; it only comes from the update server."""
+    import hashlib, json, tempfile, urllib.request
+    try:
+        base = open(os.path.join(PREFIX, "fs2-update.url")).read().split("\n")[0].strip().rstrip("/")
+        pub = open(os.path.join(PREFIX, "fs2-update.pubkey")).read().strip()
+    except OSError:
+        sys.exit("Update server address/key not found in %s (fs2-update.url / fs2-update.pubkey). Run install.sh again." % PREFIX)
+    if not base.startswith("https://") and os.environ.get("FS2_ALLOW_LOCAL") != "1":
+        sys.exit("Update server address must start with https://")
+    def get(name):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(base + "/" + name, headers={"User-Agent": "fs2-setup"}), timeout=30) as r:
+                return r.read(2_000_000)
+        except Exception as e:
+            sys.exit("Cannot download %s from the update server (%s): %s\nCheck the internet connection and try again." % (name, base, e))
+    man = json.loads(get("config-template.json"))
+    body = get("config.template.toml")
+    sha = hashlib.sha256(body).hexdigest()
+    if sha != str(man.get("sha256", "")).lower():
+        sys.exit("The downloaded template does not match its checksum. Nothing was written.")
+    level = int(man["level"])
+    msg = ("FS2-TEMPLATE-1\n%d\n%s\n" % (level, sha)).encode()
+    try:
+        sig = bytes.fromhex(man["sig"]); raw = bytes.fromhex(pub)
+    except ValueError:
+        sys.exit("Bad signature or key format.")
+    with tempfile.TemporaryDirectory() as d:
+        der = bytes.fromhex("302a300506032b6570032100") + raw
+        for n, data in (("pub.der", der), ("msg", msg), ("sig", sig)):
+            open(os.path.join(d, n), "wb").write(data)
+        r = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", os.path.join(d, "pub.der"), "-keyform", "DER",
+                            "-rawin", "-in", os.path.join(d, "msg"), "-sigfile", os.path.join(d, "sig")],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            sys.exit("The signature of the downloaded template is INVALID. Nothing was written.")
+    return body.decode("utf-8"), level
 
 def ask(label, default=None, tty=True):
     if not tty:
@@ -171,7 +203,8 @@ def main():
         if input('Type "yes" to confirm you may legally use these frequencies and power: ').strip().lower() != "yes":
             sys.exit("Stopped. Nothing was written.")
 
-    text = fill_template(open(find_template()).read(), dict(
+    tpl, tpl_level = fetch_template()
+    text = fill_template(tpl, dict(
         tx=tx_hz, rx=rx_hz, sdr=sdr, mcc=mcc, mnc=mnc, band=band, carrier=carrier, la=la, cc=cc, tz=tz,
         fo=freq_offset, duplex=duplex_lines, cell_text=cell_text, lat=lat, lon=lon, icao=icao,
         bind=a.dash_bind, user=user, password=password))
@@ -185,6 +218,8 @@ def main():
     fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(text)
+    # Remember which config changes are already included, so Update only applies newer ones.
+    open(os.path.join(os.path.dirname(out) or ".", "fs2-config.level"), "w").write("%d\n" % tpl_level)
     fb = out + ".fallback"
     if not os.path.exists(fb):
         shutil.copy2(out, fb)

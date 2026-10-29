@@ -69,6 +69,7 @@ install_binary() {
   if [ -n "${FS2_UPDATE_URL:-}" ] && [ ! -s "$PREFIX/fs2-update.url" ]; then
     printf '%s\n' "$FS2_UPDATE_URL" > "$PREFIX/fs2-update.url"
   fi
+  [ -n "${FS2_UPDATE_PUBKEY:-}" ] && printf '%s\n' "$FS2_UPDATE_PUBKEY" > "$PREFIX/fs2-update.pubkey"
 }
 
 if [ "$BINARY_ONLY" -eq 1 ]; then
@@ -93,7 +94,7 @@ fi
 say "Installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl file python3 usbutils libsoapysdr0.8 soapysdr-tools
+apt-get install -y --no-install-recommends ca-certificates curl file python3 openssl usbutils libsoapysdr0.8 soapysdr-tools
 case "$SDR" in
   sx) apt-get install -y --no-install-recommends git make g++ cmake libsoapysdr-dev libasound2-dev alsa-utils i2c-tools ;;
   pluto) apt-get install -y --no-install-recommends soapysdr-module-plutosdr ;;
@@ -119,7 +120,6 @@ if [ "$SDR" = "sx" ]; then
 fi
 
 install_binary
-install -m 644 "$HERE/config/config.template.toml" "$PREFIX/share/config.template.toml"
 install -m 755 "$HERE/scripts/fs2-setup" /usr/local/bin/fs2-setup
 install -m 755 "$HERE/scripts/fs2-doctor.sh" /usr/local/bin/fs2-doctor
 install -m 644 "$HERE/systemd/fs2.service" /etc/systemd/system/fs2.service
