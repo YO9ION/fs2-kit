@@ -82,3 +82,10 @@ from the GitHub release (`sudo bash install.sh --binary-only`) and the address f
   real config parser first; if anything is wrong the old config is kept (`config.toml.pre-patch` is the backup,
   `fs2-config-patch.rejected` the refused list).
 - Keep the template file in step with the changes (new installs get the template, existing stations get the changes).
+
+## Announcements (hours + forecast with the user's city)
+
+- The installer asks for the city and runs `fs2-announce setup` by itself (retry later: `sudo fs2-announce setup --city "YourCity"`). It installs ffmpeg and edge-tts, downloads the signed
+  speech converter (`convert_one-aarch64`) from the update server, makes the 48 `hour_*` files
+  ("TETRA România, nod <city>, este ora ...") and the daily forecast, and enables `fs2-forecast.timer` (05:30).
+- Maintainer, once on the build host (after every change of the converter): `/root/fs2-tools-publish.sh`.

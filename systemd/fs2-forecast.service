@@ -1,0 +1,8 @@
+[Unit]
+Description=FS2 daily weather forecast announcement
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fs2-announce forecast

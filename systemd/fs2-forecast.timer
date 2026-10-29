@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the FS2 weather forecast every morning
+
+[Timer]
+OnCalendar=*-*-* 05:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""fs2-announce - make the spoken announcements of your station with YOUR city name.
+
+  sudo fs2-announce setup --city "Brașov" [--lat 45.65 --lon 25.60]   one-time: tools + city (asks if omitted)
+  sudo fs2-announce hours [06:00 06:30 ... | all]                      "TETRA România, nod <city>, este ora ..."
+  sudo fs2-announce forecast                                           today's weather forecast for your location
+  sudo fs2-announce all                                                hours + forecast
+       fs2-announce text [06:00 ...]                                   only print the sentences (nothing is made)
+
+The audio is made with the same voice and processing as the reference station (Microsoft Alina voice via edge-tts,
+ffmpeg, then converted to the TETRA speech codec). Needs internet while making the files.
+"""
+import argparse, array, datetime, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
+import urllib.parse, urllib.request
+
+PREFIX = os.environ.get("FS2_PREFIX", "/opt/fs2")
+BASE = os.path.join(PREFIX, "announce")
+ANN_DIR = os.path.join(PREFIX, "announcements")
+CONF = os.path.join(BASE, "announce.json")
+EDGE = os.path.join(BASE, "venv", "bin", "edge-tts")
+CONVERT = os.path.join(PREFIX, "bin", "convert_one")
+VOICE = "ro-RO-AlinaNeural"
+RATE = "-10%"
+PEAK_DB = -5.2
+CHAIN = ("highpass=f=250,equalizer=f=1100:t=o:w=0.7:g=12,equalizer=f=2000:t=o:w=0.8:g=3,"
+         "equalizer=f=3000:t=o:w=1:g=8,highshelf=f=2500:g=3,"
+         "acompressor=threshold=-24dB:ratio=4:attack=3:release=150:knee=2:makeup=1,"
+         "alimiter=limit=0.95:level=disabled")
+HOUR_FILT_NOTE = "hour announcements: lead delay 200 ms, tail 0.8 s"
+FORECAST_SLOTS = ["%02d:%02d" % (h, m) for h in range(6, 10) for m in (0, 30)]
+
+ONES = ["zero", "unu", "doi", "trei", "patru", "cinci", "șase", "șapte", "opt", "nouă",
+        "zece", "unsprezece", "doisprezece", "treisprezece", "paisprezece", "cincisprezece",
+        "șaisprezece", "șaptesprezece", "optsprezece", "nouăsprezece"]
+TENS = {2: "douăzeci", 3: "treizeci", 4: "patruzeci", 5: "cincizeci",
+        6: "șaizeci", 7: "șaptezeci", 8: "optzeci", 9: "nouăzeci"}
+
+
+def die(msg):
+    sys.exit("fs2-announce: " + msg)
+
+
+def conf():
+    try:
+        return json.load(open(CONF, encoding="utf-8"))
+    except (OSError, ValueError):
+        die("not set up yet. Run:  sudo fs2-announce setup --city \"YourCity\"")
+
+
+def log(msg):
+    line = time.strftime("%Y-%m-%d %H:%M:%S ") + msg
+    print(line, flush=True)
+    try:
+        with open(os.path.join(BASE, "announce.log"), "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+# ---------- Romanian number words ----------
+def num_ro(n, g="m"):
+    n = int(n)
+    if n < 0:
+        return "minus " + num_ro(-n, g)
+    if n == 100:
+        return "o sută"
+    if n > 99:
+        return str(n)
+    if n < 20:
+        if n == 1:
+            return "un"
+        if n == 2 and g != "m":
+            return "două"
+        if n == 12 and g != "m":
+            return "douăsprezece"
+        return ONES[n]
+    t, u = divmod(n, 10)
+    w = TENS[t]
+    if u:
+        if u == 1:
+            w += " și unu"
+        elif u == 2 and g != "m":
+            w += " și două"
+        else:
+            w += " și " + ONES[u]
+    return w
+
+
+def with_noun(n, sing, plur, g):
+    n = int(n)
+    if n == 1:
+        return "un " + sing if g != "f" else "o " + sing
+    if n < 0:
+        return "minus " + with_noun(-n, sing, plur, g)
+    if n == 0:
+        return "zero " + plur
+    return num_ro(n, g) + (" de " if n >= 20 else " ") + plur
+
+
+def desc_ro(code):
+    if code == 0:
+        return "Cer senin"
+    if code in (1, 2):
+        return "Cer parțial noros"
+    if code == 3:
+        return "Cer noros"
+    if code in (45, 48):
+        return "Ceață"
+    if code in (51, 53, 55, 56, 57):
+        return "Burniță"
+    if code in (61, 63, 65, 66, 67):
+        return "Ploaie"
+    if code in (71, 73, 75, 77, 85, 86):
+        return "Ninsoare"
+    if code in (80, 81, 82):
+        return "Averse de ploaie"
+    if code in (95, 96, 99):
+        return "Furtună"
+    return "Vreme schimbătoare"
+
+
+# ---------- sentences ----------
+def ora_words(h):
+    if h == 0:
+        return "zero"
+    if h == 1:
+        return "unu"
+    return num_ro(h, "n")
+
+
+def min_words(m):
+    if m == 0:
+        return "."
+    if m == 1:
+        return " și un minut."
+    w = num_ro(m, "n")
+    return " și " + w + (" de minute." if m >= 20 else " minute.")
+
+
+def hour_text(city, h, m):
+    return "TETRA România, nod " + city + ", este ora " + ora_words(h) + min_words(m)
+
+
+def forecast_text(city, d):
+    daily = d["daily"]
+    tmin = round(daily["temperature_2m_min"][0])
+    tmax = round(daily["temperature_2m_max"][0])
+    prob = daily.get("precipitation_probability_max", [0])[0] or 0
+    wind = round(daily.get("wind_speed_10m_max", [0])[0] or 0)
+    code = int(daily.get("weather_code", [0])[0] or 0)
+    parts = ["Prognoza meteo, pentru astăzi, " + city + ".",
+             desc_ro(code) + ".",
+             "Minima va fi de, " + with_noun(tmin, "grad", "grade", "n")
+             + ", iar maxima, de " + with_noun(tmax, "grad", "grade", "n") + "."]
+    prob = int(round(prob))
+    parts.append("Probabilitatea de precipitații este de " + num_ro(prob, "n") + " la sută." if prob >= 10
+                 else "Nu sunt așteptate precipitații.")
+    parts.append("Vântul va atinge " + with_noun(wind, "kilometru", "kilometri", "m") + " pe oră." if wind >= 15
+                 else "Vânt slab.")
+    parts.append("O zi bună!")
+    return " ".join(parts)
+
+
+# ---------- audio ----------
+def run(cmd, timeout):
+    subprocess.run(cmd, check=True, timeout=timeout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+
+def process(mp3, pcm, delay_ms=0, pad_s=0.8):
+    af = ("adelay=%d:all=1," % delay_ms if delay_ms else "") + CHAIN + ",apad=pad_dur=%s" % pad_s
+    run(["ffmpeg", "-y", "-loglevel", "error", "-i", mp3, "-ac", "1", "-ar", "8000", "-af", af, "-f", "s16le", pcm], 60)
+    a = array.array("h")
+    with open(pcm, "rb") as f:
+        a.frombytes(f.read())
+    pk = max((abs(x) for x in a), default=0)
+    if pk < 100:
+        raise RuntimeError("audio is silent")
+    g = 32767 * 10 ** (PEAK_DB / 20.0) / pk
+    out = array.array("h", (max(-32768, min(32767, int(round(x * g)))) for x in a))
+    with open(pcm, "wb") as f:
+        f.write(out.tobytes())
+
+
+def speak(text, delay_ms, tmp):
+    mp3, pcm, ac = tmp + ".mp3", tmp + ".pcm", tmp + ".acelp"
+    last = None
+    for _ in range(3):
+        try:
+            run([EDGE, "--voice", VOICE, "--rate=" + RATE, "--text", text, "--write-media", mp3], 90)
+            last = None
+            break
+        except Exception as e:  # noqa: BLE001
+            last = e
+            time.sleep(5)
+    if last:
+        raise RuntimeError("text-to-speech failed (internet?): %s" % last)
+    process(mp3, pcm, delay_ms, 0.8)
+    run([CONVERT, pcm, ac], 120)
+    data = open(ac, "rb").read()
+    for p in (mp3, pcm, ac):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    if len(data) < 200:
+        raise RuntimeError("converted audio too short")
+    return data
+
+
+def hour_file(h, m):
+    return os.path.join(ANN_DIR, "hour_%d_%02d.acelp" % (h or 24, m))
+
+
+def daily_file(slot):
+    h, m = [int(x) for x in slot.split(":")]
+    return os.path.join(ANN_DIR, "daily_%02d_%02d.acelp" % (h, m))
+
+
+def write_atomic(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
+# ---------- commands ----------
+def parse_slots(args):
+    if not args or args == ["all"]:
+        return [(h, m) for h in range(24) for m in (0, 30)]
+    out = []
+    for a in args:
+        if not re.fullmatch(r"\d{1,2}:(00|30)", a):
+            die("time must look like 06:00 or 06:30 (only :00 and :30), got %r" % a)
+        h, m = a.split(":")
+        out.append((int(h) % 24, int(m)))
+    return out
+
+
+def cmd_text(a):
+    c = conf()
+    for h, m in parse_slots(a.slots):
+        print("%02d:%02d  %s" % (h, m, hour_text(c["city"], h, m)))
+
+
+def cmd_hours(a):
+    c = conf()
+    os.makedirs(ANN_DIR, exist_ok=True)
+    slots = parse_slots(a.slots)
+    for h, m in slots:
+        data = speak(hour_text(c["city"], h, m), 200, os.path.join(BASE, "hour_tmp"))
+        write_atomic(hour_file(h, m), data)
+        log("wrote %s (%d bytes)" % (hour_file(h, m), len(data)))
+    if len(slots) < 48:
+        log("note: if a forecast is wanted for these times, run: fs2-announce forecast")
+
+
+def fetch_forecast(c):
+    q = urllib.parse.urlencode({
+        "latitude": "%.2f" % c["lat"], "longitude": "%.2f" % c["lon"],
+        "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max",
+        "timezone": c.get("timezone", "auto"), "forecast_days": "1", "wind_speed_unit": "kmh"})
+    last = None
+    for _ in range(3):
+        try:
+            with urllib.request.urlopen("https://api.open-meteo.com/v1/forecast?" + q, timeout=20) as r:
+                return json.load(r)
+        except Exception as e:  # noqa: BLE001
+            last = e
+            time.sleep(10)
+    raise RuntimeError("forecast fetch failed: %s" % last)
+
+
+def remove_daily():
+    for s in FORECAST_SLOTS:
+        try:
+            os.remove(daily_file(s))
+        except FileNotFoundError:
+            pass
+
+
+def cmd_forecast(a):
+    c = conf()
+    try:
+        d = fetch_forecast(c)
+        text = forecast_text(c["city"], d)
+        log("text: " + text)
+        fc = speak(text, 0, os.path.join(BASE, "forecast_tmp"))
+        for s in FORECAST_SLOTS:
+            h, m = [int(x) for x in s.split(":")]
+            hf = hour_file(h, m)
+            if not os.path.exists(hf):
+                log("missing time announcement %s, skipping slot %s (run: fs2-announce hours)" % (hf, s))
+                continue
+            write_atomic(daily_file(s), open(hf, "rb").read() + fc)
+            log("wrote %s" % daily_file(s))
+    except Exception as e:  # noqa: BLE001
+        log("FAILED: %s -- removing daily files so an old forecast is never played" % e)
+        remove_daily()
+        sys.exit(1)
+
+
+def cmd_all(a):
+    a.slots = []
+    cmd_hours(a)
+    cmd_forecast(a)
+
+
+# ---------- setup: tools, signed convert_one, city ----------
+def verify(msg, sig_hex, pub_hex):
+    with tempfile.TemporaryDirectory() as d:
+        for n, data in (("pub.der", bytes.fromhex("302a300506032b6570032100") + bytes.fromhex(pub_hex)),
+                        ("msg", msg), ("sig", bytes.fromhex(sig_hex))):
+            open(os.path.join(d, n), "wb").write(data)
+        r = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", os.path.join(d, "pub.der"),
+                            "-keyform", "DER", "-rawin", "-in", os.path.join(d, "msg"), "-sigfile", os.path.join(d, "sig")],
+                           capture_output=True)
+        return r.returncode == 0
+
+
+def http_get(url, limit):
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "fs2-announce"}), timeout=60) as r:
+        return r.read(limit)
+
+
+def ensure_convert():
+    if os.access(CONVERT, os.X_OK):
+        return
+    arch = os.uname().machine
+    try:
+        base = open(os.path.join(PREFIX, "fs2-update.url")).read().split("\n")[0].strip().rstrip("/")
+        pub = open(os.path.join(PREFIX, "fs2-update.pubkey")).read().strip()
+    except OSError:
+        die("update server address/key not found in %s (run install.sh again)" % PREFIX)
+    if not base.startswith("https://") and os.environ.get("FS2_ALLOW_LOCAL") != "1":
+        die("update server address must start with https://")
+    name = "convert_one-" + arch
+    print("Downloading the speech converter (%s) from the update server..." % name)
+    try:
+        man = json.loads(http_get(base + "/" + name + ".json", 65536))
+        body = http_get(base + "/" + name, 60_000_000)
+    except Exception as e:  # noqa: BLE001
+        die("cannot download %s: %s" % (name, e))
+    sha = hashlib.sha256(body).hexdigest()
+    if sha != man.get("sha256", "").lower() or not verify(("FS2-TOOL-1\n%s\n%s\n" % (name, sha)).encode(), man["sig"], pub):
+        die("the downloaded converter failed the signature/checksum check. Nothing was installed.")
+    os.makedirs(os.path.dirname(CONVERT), exist_ok=True)
+    tmp = CONVERT + ".new"
+    open(tmp, "wb").write(body)
+    os.chmod(tmp, 0o755)
+    os.replace(tmp, CONVERT)
+    print("Speech converter installed.")
+
+
+def ensure_edge():
+    if os.access(EDGE, os.X_OK):
+        return
+    print("Installing the text-to-speech tool (edge-tts)...")
+    try:
+        subprocess.run([sys.executable, "-m", "venv", os.path.join(BASE, "venv")], check=True)
+        subprocess.run([os.path.join(BASE, "venv", "bin", "pip"), "install", "--quiet", "edge-tts"], check=True)
+    except Exception as e:  # noqa: BLE001
+        die("could not install edge-tts (%s). On Raspberry Pi OS run first:  sudo apt install python3-venv" % e)
+
+
+def cmd_setup(a):
+    os.makedirs(BASE, exist_ok=True)
+    if not shutil.which("ffmpeg"):
+        print("Installing ffmpeg...")
+        subprocess.run(["apt-get", "install", "-y", "--no-install-recommends", "ffmpeg"], check=True)
+    ensure_edge()
+    ensure_convert()
+    old = {}
+    try:
+        old = json.load(open(CONF, encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    city = a.city or input("City or place name to say in the announcements [%s]: " % old.get("city", "")).strip() or old.get("city")
+    if not city or not re.fullmatch(r"[^\n\r\"\\<>{}|;`$]{2,40}", city):
+        die("city name: 2-40 characters, letters/spaces/diacritics (no quotes or special symbols)")
+    lat = a.lat if a.lat is not None else old.get("lat")
+    lon = a.lon if a.lon is not None else old.get("lon")
+    if lat is None or lon is None:
+        # default: the station location written by fs2-setup into config.toml
+        try:
+            txt = open(os.path.join(PREFIX, "config.toml")).read()
+            lat = float(re.search(r"(?m)^flowstation_lat\s*=\s*(-?[\d.]+)", txt).group(1))
+            lon = float(re.search(r"(?m)^flowstation_lon\s*=\s*(-?[\d.]+)", txt).group(1))
+        except Exception:  # noqa: BLE001
+            die("latitude/longitude unknown: add  --lat 45.65 --lon 25.60")
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        die("latitude/longitude out of range")
+    tz = old.get("timezone")
+    if not tz:
+        try:
+            tz = re.search(r'(?m)^\s*timezone\s*=\s*"([^"]+)"', open(os.path.join(PREFIX, "config.toml")).read()).group(1)
+        except Exception:  # noqa: BLE001
+            tz = "auto"
+    json.dump({"city": city, "lat": lat, "lon": lon, "timezone": tz}, open(CONF, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    print("Saved: city %s, location %.4f, %.4f" % (city, lat, lon))
+    print("Making all hour announcements (about 48 files, takes a few minutes)...")
+    cmd_hours(argparse.Namespace(slots=[]))
+    if abs(lat) < 0.01 and abs(lon) < 0.01:
+        print("No station location was given, so the weather forecast is skipped. Add it later with:\n  sudo fs2-announce setup --city \"%s\" --lat 45.65 --lon 25.60" % city)
+    else:
+        try:
+            cmd_forecast(argparse.Namespace(slots=[]))
+        except SystemExit:
+            print("The forecast could not be made now; the timer will try again every morning.")
+    if shutil.which("systemctl") and os.path.exists("/etc/systemd/system/fs2-forecast.timer"):
+        subprocess.run(["systemctl", "enable", "--now", "fs2-forecast.timer"], check=False)
+        print("The forecast will be refreshed every morning automatically.")
+    print("Done. Choose which hours are announced in the dashboard.")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("setup"); s.add_argument("--city"); s.add_argument("--lat", type=float); s.add_argument("--lon", type=float)
+    s.set_defaults(fn=cmd_setup)
+    for n, fn in (("hours", cmd_hours), ("text", cmd_text)):
+        p = sub.add_parser(n); p.add_argument("slots", nargs="*"); p.set_defaults(fn=fn)
+    sub.add_parser("forecast").set_defaults(fn=cmd_forecast)
+    sub.add_parser("all").set_defaults(fn=cmd_all)
+    a = ap.parse_args()
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

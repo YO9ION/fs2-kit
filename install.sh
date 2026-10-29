@@ -94,7 +94,7 @@ fi
 say "Installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl file python3 openssl usbutils libsoapysdr0.8 soapysdr-tools
+apt-get install -y --no-install-recommends ca-certificates curl file python3 python3-venv openssl ffmpeg usbutils libsoapysdr0.8 soapysdr-tools
 case "$SDR" in
   sx) apt-get install -y --no-install-recommends git make g++ cmake libsoapysdr-dev libasound2-dev alsa-utils i2c-tools ;;
   pluto) apt-get install -y --no-install-recommends soapysdr-module-plutosdr ;;
@@ -121,6 +121,9 @@ fi
 
 install_binary
 install -m 755 "$HERE/scripts/fs2-setup" /usr/local/bin/fs2-setup
+install -m 755 "$HERE/scripts/fs2-announce" /usr/local/bin/fs2-announce
+install -m 644 "$HERE/systemd/fs2-forecast.service" /etc/systemd/system/fs2-forecast.service
+install -m 644 "$HERE/systemd/fs2-forecast.timer" /etc/systemd/system/fs2-forecast.timer
 install -m 755 "$HERE/scripts/fs2-doctor.sh" /usr/local/bin/fs2-doctor
 install -m 644 "$HERE/systemd/fs2.service" /etc/systemd/system/fs2.service
 systemctl daemon-reload

@@ -155,7 +155,7 @@ def main():
     ap.add_argument("--la"); ap.add_argument("--cc")
     ap.add_argument("--timezone"); ap.add_argument("--dash-user"); ap.add_argument("--dash-pass")
     ap.add_argument("--dash-bind", default="0.0.0.0")
-    ap.add_argument("--cell-text"); ap.add_argument("--location", help="latitude, longitude"); ap.add_argument("--icao")
+    ap.add_argument("--cell-text"); ap.add_argument("--city", help="name spoken in the announcements"); ap.add_argument("--no-announce", action="store_true"); ap.add_argument("--location", help="latitude, longitude"); ap.add_argument("--icao")
     ap.add_argument("--out", default="/opt/fs2/config.toml")
     ap.add_argument("--yes-legal", action="store_true", help="confirm you may legally transmit on these frequencies")
     ap.add_argument("--non-interactive", action="store_true")
@@ -180,12 +180,15 @@ def main():
     cell_text = a.cell_text or ask("Text shown on the radios' home screen (e.g. your city + cell name)", "FS2 CELL", tty)
     loc = a.location or ask("Station location 'latitude, longitude' (used for weather and Proximity Notice; Enter = skip)", "0, 0", tty)
     lat, lon = parse_latlon(loc)
+    city = a.city or ask("City or place name spoken in the announcements (\"TETRA Romania, nod <city>\")", None, tty)
     icao = (a.icao or ask("Nearest airport ICAO code for the weather service (e.g. LROP)", "LROP", tty)).upper()
     user = a.dash_user or ask("Dashboard user name", "admin", tty)
     password = a.dash_pass or secrets.token_urlsafe(12)
     for name, v in (("MCC", mcc), ("MNC", mnc), ("location area", la), ("colour code", cc)):
         if not re.fullmatch(r"\d{1,5}", v):
             sys.exit("%s must be a number." % name)
+    if not re.fullmatch(r"[^\n\r\"\\<>{}|;`$]{2,40}", city):
+        sys.exit("City name: 2-40 characters, no quotes or special symbols.")
     if not re.fullmatch(r"[A-Za-z0-9]{4}", icao):
         sys.exit("ICAO code must be 4 letters/digits.")
     if not re.fullmatch(r"[A-Za-z0-9 .,_/+()-]{1,40}", cell_text):
@@ -232,6 +235,14 @@ def main():
     print("Dashboard:  http://%s:8080   user: %s   password: %s" % (ip, user, password))
     print("Write the password down now; it is stored only in the config file.")
     print("Start / restart:  sudo systemctl restart fs2")
+    if not a.no_announce:
+        tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fs2-announce")
+        if not os.path.exists(tool):
+            tool = "/usr/local/bin/fs2-announce"
+        print("\nMaking the spoken announcements for %s (needs internet, takes a few minutes)..." % city)
+        rc = subprocess.run([sys.executable, tool, "setup", "--city", city, "--lat", lat, "--lon", lon]).returncode
+        if rc != 0:
+            print("\nThe announcements could not be made now (the station itself is fine). Try again later with:\n  sudo fs2-announce setup --city \"%s\" --lat %s --lon %s" % (city, lat, lon))
 
 if __name__ == "__main__":
     main()
