@@ -1,5 +1,5 @@
-# FS2 TETRA configuration (kit template). fs2-setup fills the marked values; the rest are the defaults of a tested station.
-# DO NOT START without checking that the frequencies and power comply with the legal limits in your jurisdiction
+# FlowStation TETRA configuration file
+# DO NOT START without editing to comply with the legal limits in your jurisdiction
 
 config_version = "0.6"
 
@@ -23,9 +23,8 @@ backend = "SoapySdr"
 [phy_io.soapysdr]
 # Transmit tx(dl) and receive rx(ul) frequencies in Hz
 # !!! Make sure to also edit the corresponding fields in the cell_info section.
-tx_freq = @@TX_HZ@@
-rx_freq = @@RX_HZ@@
-@@SDR_LINES@@
+tx_freq = 438812500
+rx_freq = 431212500
 
 
 # Adjust if your SDR has a non-negligible tuning error
@@ -33,7 +32,7 @@ rx_freq = @@RX_HZ@@
 
 # Optional sample rate (samples/sec) applied to both RX and TX.
 # If unset, the device-specific default is used.
-# (sample rate and gains are written by fs2-setup, see above)
+  sample_rate = 600000
 
 
 # Optional SDR center frequencies in Hz for dual-carrier / phase-modulated operation.
@@ -63,17 +62,21 @@ rx_freq = @@RX_HZ@@
 # Check valid gain names with SoapySDRUtil --probe
 # tx_gain_pad = 50.0
 # rx_gain_lna = 30.0
+  rx_gain_lna = 42.0
+  rx_gain_pga = 16.0
+  tx_gain_dac = 6.0
+  tx_gain_mixer = 60.0
 
 
 ###############################################################################
 
 [net_info]
 # Mobile Country Code (MCC) - identifies your country
-mcc = @@MCC@@
+mcc = 901  # tetra default
 
 # Mobile Network Code (MNC) - identifies the TETRA network
 # MAKE SURE THE MNC CAN BE USED, CONSULT RELEVANT AUTHORITIES IF NECESSARY
-mnc = @@MNC@@
+mnc = 9999
 
 ###############################################################################
 
@@ -81,26 +84,27 @@ mnc = @@MNC@@
 rxlev_access_min = 3   # -100 dBm (default 3 = -110 dBm); higher = radios leave a weak cell sooner
 
 # See ETSI TS 100 392-15 V1.5.1 Clause 6: Duplex spacing
-freq_band = @@FREQ_BAND@@
-main_carrier = @@MAIN_CARRIER@@
-# secondary_carrier = 0       # optional second carrier, typically adjacent (+/- 25 kHz)
+freq_band = 4                       # 400MHz band
+main_carrier = 1552                 # + 1521 * 25kHz = 38250kHz
+secondary_carrier = 1555          # Optional second carrier, typically adjacent (+/- 25 kHz)
 dual_carrier_enabled = false        # Dashboard "Dual-Carrier ON/OFF" switch for the carrier above.
                                      # Absent = on. Set false to keep the number but run single-carrier.
 
-@@DUPLEX_LINES@@
-freq_offset = @@FREQ_OFFSET@@
+duplex_spacing = 7                  # Use 5MHz spacing between ul and dl (for 400 MHz band)
+custom_duplex_spacing = 7600000     # Do not uncomment unless you have programmed a custom duplex spacing entry in your radios
+freq_offset = 12500                    # Carrier offset. Usually 0. Options: 0, 6250, -6250, 12500 Hz.
 reverse_operation = false           # False: UL below DL. True: UL above DL.
 
 # Location area identifier
-location_area = @@LA@@
+location_area = 1
 
 # Colour code (0-63), helps distinguish adjacent cells on the same frequency
-colour_code = @@CC@@
+colour_code = 1
 
 # IANA timezone for time broadcasting via D-NWRK-BROADCAST. When set, the BS will
 # broadcast UTC time and local time offset once per hyperframe (~61s) so that
 # radios can synchronize their clocks. Daylight saving time is handled automatically.
-timezone = "@@TZ@@"
+  timezone = "Europe/Bucharest"
 
 # Local SSI ranges for this cell. Traffic for these ranges will not leave the cell.
 # Overrides any settings in the brew section, if enabled.
@@ -211,19 +215,18 @@ timezone = "@@TZ@@"
 # Add one [[cell_info.neighbor_cells_ca]] block per neighboring cell.
 # Comment out the whole section if you have no neighbors.
 #
-# Neighbour cells (only for multi-cell networks): uncomment and edit when you run a second cell.
-# [[cell_info.neighbor_cells_ca]]
-# cell_identifier_ca = 2                # 0-31, unique within CA cluster
-# cell_reselection_types_supported = 3  # 0=none, 1=announced, 2=unannounced, 3=both
-# neighbor_cell_synchronized = false     # true if time-sync'd with us
-# cell_load_ca = 2                      # 0=low, 1=medium-low, 2=medium-high, 3=high
-# main_carrier_number = 1553            # 0-4095, must differ from our main_carrier
+  [[cell_info.neighbor_cells_ca]]
+  cell_identifier_ca = 2                # 0-31, unique within CA cluster
+  cell_reselection_types_supported = 3  # 0=none, 1=announced, 2=unannounced, 3=both
+  neighbor_cell_synchronized = false     # true if time-sync'd with us
+  cell_load_ca = 2                      # 0=low, 1=medium-low, 2=medium-high, 3=high
+  main_carrier_number = 1553            # 0-4095, must differ from our main_carrier
 #
 # Optional fields (omit if not needed):
 # main_carrier_number_extension = 0     # 0-1023 (only if carrier > 4095 needed)
-# mcc = 901                             # 0-1023, only set if neighbor on different MCC
-# mnc = 9999                            # 0-16383, only set if neighbor on different MNC
-# location_area = 2                     # 0-16383, neighbor's location area
+  mcc = 901                             # 0-1023, only set if neighbor on different MCC
+  mnc = 9999                            # 0-16383, only set if neighbor on different MNC
+  location_area = 2                     # 0-16383, neighbor's location area
 # maximum_ms_transmit_power = 7         # 0-7 (0=lowest, 7=highest TX power for MS)
 #  minimum_rx_access_level = 0           # 0-15 (minimum RSSI level for cell access)
 # subscriber_class = 0xFFFF             # 16 bits, which subscriber classes can access
@@ -232,18 +235,18 @@ timezone = "@@TZ@@"
 #
 # Optional per-neighbor BS service details — advertise which services the neighbor
 # supports (mirrors the top-level cell service flags). Omit to leave unset.
-# [cell_info.neighbor_cells_ca.bs_service_details]
-# registration = true                 # neighbor accepts registration
-# deregistration = true               # neighbor accepts deregistration
-# priority_cell = false               # neighbor is a priority cell
+  [cell_info.neighbor_cells_ca.bs_service_details]
+  registration = true                 # neighbor accepts registration
+  deregistration = true               # neighbor accepts deregistration
+  priority_cell = false               # neighbor is a priority cell
 # no_minimum_mode = false             # neighbor never enters minimum mode
-# migration = true                   # neighbor supports migration
-# system_wide_services = true        # neighbor offers system-wide services
-# voice_service = true                # neighbor offers voice service
-# circuit_mode_data_service = true   # neighbor offers circuit-mode data
-# sndcp_service = true               # neighbor offers packet data (SNDCP)
+  migration = true                   # neighbor supports migration
+  system_wide_services = true        # neighbor offers system-wide services
+  voice_service = true                # neighbor offers voice service
+  circuit_mode_data_service = true   # neighbor offers circuit-mode data
+  sndcp_service = true               # neighbor offers packet data (SNDCP)
 # aie_service = false                 # neighbor offers air-interface encryption
-# advanced_link = true               # neighbor offers the advanced (enhanced data) link
+  advanced_link = true               # neighbor offers the advanced (enhanced data) link
 #
 # Example with two neighbors:
 # [[cell_info.neighbor_cells_ca]]
@@ -273,7 +276,7 @@ timezone = "@@TZ@@"
   interval_multiframes = 8       # Broadcast interval (1 MF - 1s; default: 96 - 96s)
   protocol_id = 220               # SDS protocol ID for Home Mode Display (default: 220)
   text_coding_scheme = "LATIN"    # "LATIN" = ISO-8859-1, "UTF16" = UCS-2/UTF-16BE
-  text = "@@CELL_TEXT@@"
+  text = "CITY NAME CELL"           # Text shown on radio display
 
 
 ###############################################################################
@@ -292,7 +295,7 @@ timezone = "@@TZ@@"
   interval_multiframes = 7200       # Broadcast interval (1 MF - 1s; default: 96 - 96s)
   protocol_id = 130               # SDS protocol ID (default: 220 - change to avoid conflict)
   text_coding_scheme = "LATIN"    # "LATIN" = ISO-8859-1, "UTF16" = UCS-2/UTF-16BE
-  text = "@@CELL_TEXT@@"
+  text = "CITY NAME CELL"                 # Text payload to broadcast
 ###############################################################################
 
  [cell_info.sds_command_control]
@@ -387,12 +390,12 @@ service_issi = 9998
 periodic_enabled = true
 periodic_issi = 1
 periodic_is_group = false
-periodic_icao = "@@ICAO@@"
+periodic_icao = "LROP"
 periodic_interval_secs = 7200
-# Telegram alerts: DISABLED. Needs your own Telegram bot (token + chat id); enable it later from the dashboard Config page.
+# Telegram alerts: disabled (needs your own bot). Remove the # signs and fill in your bot token to use it.
 # [telegram_alerts]
 # enabled = true
-# bot_token = "<bot_token>"
+# bot_token = "@@BOT_TOKEN@@"
 # chat_ids = []
 # alert_connect = true
 # alert_disconnect = true
@@ -426,7 +429,7 @@ periodic_interval_secs = 7200
 
   [dashboard]
   port = 8080
-  bind = "@@DASH_BIND@@"
+  bind = "192.168.X.XXX"
 
 # OPTIONAL: HTTP Basic Auth — protect the dashboard with a username and password.
 # When set, the browser will show a native login dialog on first access.
@@ -437,8 +440,8 @@ periodic_interval_secs = 7200
 # the public internet without TLS. For internet-facing use, put a reverse proxy
 # with HTTPS (e.g. nginx, Caddy) in front of the dashboard.
 #
-  username = "@@DASH_USER@@"
-  password = "@@DASH_PASS@@"
+  username = "@@USERNAME@@"
+  password = "@@PASSWORD@@"
 
 # OPTIONAL: public read-only overview (FH-FEAT-033). When true AND username/password
 # are set, anonymous visitors see a small read-only status page (radio count, active
@@ -484,41 +487,40 @@ periodic_interval_secs = 7200
 # Uncomment this section to automatically enable the Brew entity.
 # See: https://wiki.tetrapack.online/books/tetra/page/brew
 
-# Brew / TetraPack: DISABLED. Needs your own registered account. Uncomment, fill host, username and password, then restart.
-# [brew]
+ [brew]
 
 # Server address
-# host = "core.tetrapack.online"
-# port = 443
+  host = "core.tetrapack.online"
+  port = 443
 
 # Use TLS (wss:// / https://)
-# tls = true
+  tls = true
 
 # Only accept/forward GSSIs in this range: talkgroups 91 and up go to TetraPack.
 # Talkgroups 1-90 are handled by the separate [brew_secondary] connection below.
-# gssi_range = [91, 4294967295]
+  gssi_range = [91, 4294967295]
 
 # HTTP Digest authentication credentials, registered in BrandMeister.
 # Username should be your SSID (DMR ID + 2-digit suffix).
 # Password is your BrandMeister hotspot password.
-# username = 0
-# password = "<password>"
+  username = 0
+  password = "@@PASSWORD@@"
 
 # Reconnect delay (seconds)
-# reconnect_delay_secs = 10
+  reconnect_delay_secs = 10
 
 # Additional initial latency in frames for inbound Brew jitter playback.
 # Default: 0. Increase if you hear audio artifacts at the start of transmissions.
 # jitter_initial_latency_frames = 0
 
 # Enable SDS forwarding between local clients and Brew. Enabled by default.
-# feature_sds_enabled = true
+  feature_sds_enabled = true
 
 # Export RSSI measurements to the Brew server as Service (0xf4) JSON messages.
 # Disabled by default. Enable if your Brew server supports RSSI data ingestion.
 # When enabled, each radio's signal level is sent at most once every 5 seconds.
 # Format: {"issi": 2260000, "rssi_dbfs": -42.3}
-# feature_rssi_export = true
+  feature_rssi_export = true
 
 # Uncomment to allow only calls for selected SSIs to be forwarded through Brew.
 # If left commented, all calls (outside local_ssi_ranges) are allowed through Brew.
@@ -526,7 +528,7 @@ periodic_interval_secs = 7200
 
 # Optional PBX gateway ISSIs that should always be considered Brew-routable
 # (useful for phone/PBX interconnect IDs that do not follow normal Tetrapack ISSI rules)
-# pbx_gateway_issis = [2260000, 2260001]
+  pbx_gateway_issis = [2260000, 2260001]
 
 ###############################################################################
 
@@ -534,27 +536,26 @@ periodic_interval_secs = 7200
 # Not connected to or through the TetraPack connection above -- an independent leg.
 # No username/password: the VPS brew-server has [auth] enabled = false.
 
-# Second Brew connection (your own server): DISABLED. Uncomment and set your own host/port to use it.
-# [brew_secondary]
-# route_private_calls = true
-# feature_rf_export = true
-# rf_export_label = "cell1"
+ [brew_secondary]
+  route_private_calls = true
+  feature_rf_export = true
+  rf_export_label = "cell1"
 
 # Server address
-# host = "<your-server>"
-# port = 9000
+  host = "136.70.24.243"
+  port = 9000
 
 # Use TLS (wss:// / https://)
-# tls = false
+  tls = false
 
 # Only accept/forward GSSIs in this range: talkgroups 1-90.
-# gssi_range = [10, 90]
+  gssi_range = [10, 90]
 
 # Reconnect delay (seconds)
-# reconnect_delay_secs = 10
+  reconnect_delay_secs = 10
 
 # Enable SDS forwarding between local clients and this Brew connection.
-# feature_sds_enabled = true
+  feature_sds_enabled = true
 
 ###############################################################################
 
@@ -570,12 +571,12 @@ periodic_interval_secs = 7200
 # SECURITY NOTE: rwth_core_authkey and password are secrets. Keep real values in
 # your local config only; do not commit them.
 #
-# DAPNET: DISABLED. Needs your own DAPNET account and core credentials; enable later from the dashboard Config page.
+# DAPNET: disabled (needs your own DAPNET account). Remove the # signs and fill in your details to use it.
 # [dapnet]
 # enabled = true
-# api_url = "<api_url>"
-# username = "<username>"
-# password = "<password>"
+# api_url = "@@API_URL@@"
+# username = "@@USERNAME@@"
+# password = "@@PASSWORD@@"
 # poll_interval_secs = 30
 
 # forward_sds = true
@@ -599,12 +600,12 @@ periodic_interval_secs = 7200
 # telegram_prefix = "DAPNET"
 
 # rwth_core_enabled = true
-# rwth_core_host = "<rwth_core_host>"
+# rwth_core_host = "@@RWTH_CORE_HOST@@"
 # rwth_core_port = 43434
 # rwth_core_device = "FS2"
 # rwth_core_version = "2.4.1"
-# rwth_core_callsign = "<rwth_core_callsign>"
-# rwth_core_authkey = "<rwth_core_authkey>"
+# rwth_core_callsign = "@@RWTH_CORE_CALLSIGN@@"
+# rwth_core_authkey = "@@RWTH_CORE_AUTHKEY@@"
 # rwth_messages_limit = 100
 
 ###############################################################################
@@ -622,8 +623,8 @@ periodic_interval_secs = 7200
 #
 [proximity_notice]
 enabled = true
-flowstation_lat = @@LAT@@
-flowstation_lon = @@LON@@
+flowstation_lat = 0
+flowstation_lon = 0
 radius_m = 300000.0
 cooldown_secs = 1800
 
@@ -647,7 +648,7 @@ text_prefix = "Proximity Notice"
 
 sip_title_prefix = "Proximity Notice"
 telegram_prefix = "Distance from CELL 1"
-# Third Brew connection (private group routing): DISABLED. Needs your own server.
+# Third Brew connection: disabled (address was removed from the public copy). Fill in host and port to use it.
 # [brew_private]
 # host = "<your-server>"
 # port = xxxx

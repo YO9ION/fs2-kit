@@ -66,6 +66,55 @@ def parse_latlon(v):
         sys.exit("Location out of range.")
     return "%.4f" % la, "%.4f" % lo
 
+def fill_template(text, v):
+    """Personalise the template: only the lines that differ per station are replaced, section by section."""
+    lines = text.replace("\r", "").split("\n")
+    out, sec, skip_gain = [], "", False
+    def setkey(l, key, value):
+        m = re.match(r"^(\s*)%s\s*=" % re.escape(key), l)
+        return (m.group(1) + "%s = %s" % (key, value)) if m else None
+    for l in lines:
+        h = re.match(r"^\s*(\[\[?[^\]]+\]\]?)\s*(#.*)?$", l)
+        if h:
+            sec = h.group(1).strip("[]")
+        new = None
+        if sec == "phy_io.soapysdr":
+            new = setkey(l, "tx_freq", v["tx"]) or setkey(l, "rx_freq", v["rx"])
+            if new is None and re.match(r"^\s*(sample_rate|rx_gain_lna|rx_gain_pga|tx_gain_dac|tx_gain_mixer)\s*=", l) and v["sdr"] != "sx":
+                new = "# " + l.strip() + "   # (LimeSDR/PlutoSDR: use SoapySDRUtil --probe to choose gains)"
+            if new is None and v["sdr"] != "sx" and re.match(r"^# device = \"driver=%s" % ("plutosdr" if v["sdr"] == "pluto" else "lime"), l):
+                new = l[2:].split(",")[0].rstrip() + '"' if "," in l else l[2:]
+        elif sec == "net_info":
+            new = setkey(l, "mcc", str(v["mcc"]) + "  # tetra default") or setkey(l, "mnc", v["mnc"])
+        elif sec == "cell_info":
+            for k, val in (("freq_band", v["band"]), ("main_carrier", v["carrier"]), ("freq_offset", v["fo"]),
+                           ("location_area", v["la"]), ("colour_code", v["cc"]), ("timezone", '"%s"' % v["tz"])):
+                new = new or setkey(l, k, val)
+            if re.match(r"^duplex_spacing\s*=", l):
+                new = v["duplex"]
+            elif re.match(r"^custom_duplex_spacing\s*=", l):
+                new = ""
+        elif sec in ("cell_info.home_mode_display", "cell_info.sds_broadcast"):
+            new = setkey(l, "text", '"%s"' % v["cell_text"])
+        elif sec == "wx_service":
+            new = setkey(l, "periodic_icao", '"%s"' % v["icao"])
+        elif sec == "dashboard":
+            new = setkey(l, "bind", '"%s"' % v["bind"]) or setkey(l, "username", '"%s"' % v["user"]) or setkey(l, "password", '"%s"' % v["password"])
+        elif sec == "proximity_notice":
+            new = setkey(l, "flowstation_lat", v["lat"]) or setkey(l, "flowstation_lon", v["lon"])
+        out.append(l if new is None else new)
+    text = "\n".join(out)
+    # a station without a neighbour cell must not advertise one: comment the active neighbour block
+    lines = text.split("\n")
+    start = next((i for i, l in enumerate(lines) if l.strip() == "[[cell_info.neighbor_cells_ca]]"), None)
+    if start is not None:
+        end = next((i for i in range(start, len(lines)) if lines[i].startswith("# Example with two neighbors")), len(lines))
+        for i in range(start, end):
+            if lines[i].strip() and not lines[i].lstrip().startswith("#"):
+                lines[i] = "# " + lines[i].strip()
+        lines[start] = "# (Neighbour cell block disabled: remove the # signs and edit it when you run a second cell.)\n" + lines[start]
+    return "\n".join(lines)
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--sdr", choices=sorted(SDR_LINES), help="radio board type")
@@ -122,16 +171,10 @@ def main():
         if input('Type "yes" to confirm you may legally use these frequencies and power: ').strip().lower() != "yes":
             sys.exit("Stopped. Nothing was written.")
 
-    text = open(find_template()).read()
-    vals = {"TX_HZ": tx_hz, "RX_HZ": rx_hz, "SDR_LINES": SDR_LINES[sdr], "MCC": mcc, "MNC": mnc,
-            "FREQ_BAND": band, "MAIN_CARRIER": carrier, "LA": la, "CC": cc, "TZ": tz,
-            "FREQ_OFFSET": freq_offset, "DUPLEX_LINES": duplex_lines, "CELL_TEXT": cell_text,
-            "LAT": lat, "LON": lon, "ICAO": icao, "DASH_BIND": a.dash_bind,
-            "DASH_USER": user, "DASH_PASS": password}
-    for k, v in vals.items():
-        text = text.replace("@@%s@@" % k, str(v))
-    if "@@" in text:
-        sys.exit("Unfilled placeholder left in template.")
+    text = fill_template(open(find_template()).read(), dict(
+        tx=tx_hz, rx=rx_hz, sdr=sdr, mcc=mcc, mnc=mnc, band=band, carrier=carrier, la=la, cc=cc, tz=tz,
+        fo=freq_offset, duplex=duplex_lines, cell_text=cell_text, lat=lat, lon=lon, icao=icao,
+        bind=a.dash_bind, user=user, password=password))
 
     out = a.out
     os.makedirs(os.path.dirname(out), exist_ok=True)
