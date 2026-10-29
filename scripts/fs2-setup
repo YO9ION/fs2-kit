@@ -36,15 +36,35 @@ def system_timezone():
     except OSError:
         return "UTC"
 
-def compute_carrier(tx_hz):
+def compute_plan(tx_hz, rx_hz):
+    """Return (band, main_carrier, freq_offset_hz, duplex_lines) for a TX/RX pair."""
     band = int(tx_hz // 100_000_000)
     off = tx_hz - band * 100_000_000
-    if off % 25_000:
-        sys.exit("TX frequency must be a multiple of 25 kHz.")
-    carrier = off // 25_000
+    base, r = divmod(off, 25_000)
+    if r in (0, 6_250, 12_500):
+        carrier, fo = base, r
+    elif r == 18_750:
+        carrier, fo = base + 1, -6_250
+    else:
+        sys.exit("TX frequency must be on the 6.25 kHz raster relative to a 25 kHz carrier (offsets 0, +6.25, -6.25, +12.5 kHz).")
     if not (0 <= carrier <= 4095):
         sys.exit("TX frequency out of range for a TETRA carrier number.")
-    return band, int(carrier)
+    diff = tx_hz - rx_hz
+    if diff == 5_000_000:
+        duplex = "duplex_spacing = 4"
+    else:
+        duplex = ("duplex_spacing = 7\ncustom_duplex_spacing = %d   "
+                  "# only valid if your radios have the same custom duplex entry" % diff)
+    return band, int(carrier), fo, duplex
+
+def parse_latlon(v):
+    try:
+        la, lo = [float(x) for x in re.split(r"[,; ]+", v.strip()) if x]
+    except ValueError:
+        sys.exit("Location must be two decimal numbers: latitude, longitude")
+    if not (-90 <= la <= 90 and -180 <= lo <= 180):
+        sys.exit("Location out of range.")
+    return "%.4f" % la, "%.4f" % lo
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
@@ -53,6 +73,8 @@ def main():
     ap.add_argument("--mcc"); ap.add_argument("--mnc")
     ap.add_argument("--la"); ap.add_argument("--cc")
     ap.add_argument("--timezone"); ap.add_argument("--dash-user"); ap.add_argument("--dash-pass")
+    ap.add_argument("--dash-bind", default="0.0.0.0")
+    ap.add_argument("--cell-text"); ap.add_argument("--location", help="latitude, longitude"); ap.add_argument("--icao")
     ap.add_argument("--out", default="/opt/fs2/config.toml")
     ap.add_argument("--yes-legal", action="store_true", help="confirm you may legally transmit on these frequencies")
     ap.add_argument("--non-interactive", action="store_true")
@@ -66,20 +88,27 @@ def main():
     tx = float(a.tx_mhz or ask("Transmit (downlink) frequency in MHz, e.g. 438.025", None, tty))
     rx = float(a.rx_mhz or ask("Receive (uplink) frequency in MHz", "%.6f" % (tx - 5.0), tty))
     tx_hz, rx_hz = int(round(tx * 1e6)), int(round(rx * 1e6))
-    band, carrier = compute_carrier(tx_hz)
+    band, carrier, freq_offset, duplex_lines = compute_plan(tx_hz, rx_hz)
     if tx_hz - rx_hz != 5_000_000:
-        print("\nWARNING: this template assumes a 5 MHz duplex spacing (RX = TX - 5 MHz).")
-        print("Your radios and config must agree; edit duplex_spacing in the dashboard Config page if needed.\n")
+        print("\nNOTE: TX - RX = %.4f MHz, not 5 MHz. A custom duplex spacing is written; your radios must be programmed with the same values." % ((tx_hz - rx_hz) / 1e6))
     mcc = a.mcc or ask("Mobile country code (MCC)", "901", tty)
     mnc = a.mnc or ask("Mobile network code (MNC)", "9999", tty)
     la = a.la or ask("Location area", "1", tty)
     cc = a.cc or ask("Colour code (0-63)", "1", tty)
     tz = a.timezone or ask("Timezone", system_timezone(), tty)
+    cell_text = a.cell_text or ask("Text shown on the radios' home screen (e.g. your city + cell name)", "FS2 CELL", tty)
+    loc = a.location or ask("Station location 'latitude, longitude' (used for weather and Proximity Notice; Enter = skip)", "0, 0", tty)
+    lat, lon = parse_latlon(loc)
+    icao = (a.icao or ask("Nearest airport ICAO code for the weather service (e.g. LROP)", "LROP", tty)).upper()
     user = a.dash_user or ask("Dashboard user name", "admin", tty)
     password = a.dash_pass or secrets.token_urlsafe(12)
     for name, v in (("MCC", mcc), ("MNC", mnc), ("location area", la), ("colour code", cc)):
         if not re.fullmatch(r"\d{1,5}", v):
             sys.exit("%s must be a number." % name)
+    if not re.fullmatch(r"[A-Za-z0-9]{4}", icao):
+        sys.exit("ICAO code must be 4 letters/digits.")
+    if not re.fullmatch(r"[A-Za-z0-9 .,_/+()-]{1,40}", cell_text):
+        sys.exit("Home screen text: up to 40 letters, digits and . , _ / + ( ) -")
     if not re.fullmatch(r"[A-Za-z0-9_./+-]+", tz):
         sys.exit("Invalid timezone.")
     for name, v in (("user name", user), ("password", password)):
@@ -96,6 +125,8 @@ def main():
     text = open(find_template()).read()
     vals = {"TX_HZ": tx_hz, "RX_HZ": rx_hz, "SDR_LINES": SDR_LINES[sdr], "MCC": mcc, "MNC": mnc,
             "FREQ_BAND": band, "MAIN_CARRIER": carrier, "LA": la, "CC": cc, "TZ": tz,
+            "FREQ_OFFSET": freq_offset, "DUPLEX_LINES": duplex_lines, "CELL_TEXT": cell_text,
+            "LAT": lat, "LON": lon, "ICAO": icao, "DASH_BIND": a.dash_bind,
             "DASH_USER": user, "DASH_PASS": password}
     for k, v in vals.items():
         text = text.replace("@@%s@@" % k, str(v))
