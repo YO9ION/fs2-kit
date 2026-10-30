@@ -136,6 +136,20 @@ def fill_template(text, v):
             new = setkey(l, "flowstation_lat", v["lat"]) or setkey(l, "flowstation_lon", v["lon"])
         out.append(l if new is None else new)
     text = "\n".join(out)
+    # private relay (TG 1-9 kept separate from other stations): enabled only when the administrator gave a port
+    if v.get("pport"):
+        m = re.search(r'(?m)^\s*host\s*=\s*"([^"]+)"\s*$(?=(?:\n(?!\s*\[).*)*?\n\s*port\s*=\s*9000)', text)
+        host = m.group(1) if m else None
+        lines = text.split("\n")
+        s0 = next((i for i, l in enumerate(lines) if l.strip() == "# [brew_private]"), None)
+        if s0 is not None and host:
+            e0 = next(i for i in range(s0, len(lines)) if lines[i].strip().startswith("# feature_sds_enabled"))
+            for i in range(s0, e0 + 1):
+                lines[i] = lines[i].replace("# ", "", 1).replace("<your-server>", host)
+                if re.match(r"^\s*port\s*=", lines[i]):
+                    lines[i] = "port = %d" % v["pport"]
+            lines[s0 - 1] = "# Third Brew connection: your private relay port (TG 1-9 stay inside your own cells)."
+            text = "\n".join(lines)
     # a station without a neighbour cell must not advertise one: comment the active neighbour block
     lines = text.split("\n")
     start = next((i for i, l in enumerate(lines) if l.strip() == "[[cell_info.neighbor_cells_ca]]"), None)
@@ -155,7 +169,7 @@ def main():
     ap.add_argument("--la"); ap.add_argument("--cc")
     ap.add_argument("--timezone"); ap.add_argument("--dash-user"); ap.add_argument("--dash-pass")
     ap.add_argument("--dash-bind", default="0.0.0.0")
-    ap.add_argument("--cell-text"); ap.add_argument("--city", help="name spoken in the announcements"); ap.add_argument("--no-announce", action="store_true"); ap.add_argument("--location", help="latitude, longitude"); ap.add_argument("--icao")
+    ap.add_argument("--cell-text"); ap.add_argument("--city", help="name spoken in the announcements"); ap.add_argument("--no-announce", action="store_true"); ap.add_argument("--private-port", help="private relay port given by the network administrator (0 = none)"); ap.add_argument("--location", help="latitude, longitude"); ap.add_argument("--icao")
     ap.add_argument("--out", default="/opt/fs2/config.toml")
     ap.add_argument("--yes-legal", action="store_true", help="confirm you may legally transmit on these frequencies")
     ap.add_argument("--non-interactive", action="store_true")
@@ -181,6 +195,9 @@ def main():
     loc = a.location or ask("Station location 'latitude, longitude' (used for weather and Proximity Notice; Enter = skip)", "0, 0", tty)
     lat, lon = parse_latlon(loc)
     city = a.city or ask("City or place name spoken in the announcements (\"TETRA Romania, nod <city>\")", None, tty)
+    pp = a.private_port or ask("Private relay port given to you by the network administrator (Enter = none yet)", "0", tty)
+    if not re.fullmatch(r"\d{1,5}", pp) or int(pp) > 65535:
+        sys.exit("Private relay port must be a number (0 = none).")
     icao = (a.icao or ask("Nearest airport ICAO code for the weather service (e.g. LROP)", "LROP", tty)).upper()
     user = a.dash_user or ask("Dashboard user name", "admin", tty)
     password = a.dash_pass or secrets.token_urlsafe(12)
@@ -210,7 +227,7 @@ def main():
     text = fill_template(tpl, dict(
         tx=tx_hz, rx=rx_hz, sdr=sdr, mcc=mcc, mnc=mnc, band=band, carrier=carrier, la=la, cc=cc, tz=tz,
         fo=freq_offset, duplex=duplex_lines, cell_text=cell_text, lat=lat, lon=lon, icao=icao,
-        bind=a.dash_bind, user=user, password=password))
+        bind=a.dash_bind, user=user, password=password, pport=int(pp)))
 
     out = a.out
     os.makedirs(os.path.dirname(out), exist_ok=True)

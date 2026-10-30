@@ -88,4 +88,5 @@ from the GitHub release (`sudo bash install.sh --binary-only`) and the address f
 - The installer asks for the city and runs `fs2-announce setup` by itself (retry later: `sudo fs2-announce setup --city "YourCity"`). It installs ffmpeg and edge-tts, downloads the signed
   speech converter (`convert_one-aarch64`) from the update server, makes the 48 `hour_*` files
   ("TETRA România, nod <city>, este ora ...") and the daily forecast, and enables `fs2-forecast.timer` (05:30).
+- Each user who wants their own isolated TG 1-9 gets a private relay port on the VPS (their own brew-server instance); they enter it in fs2-setup, which enables [brew_private] with the VPS address.
 - Maintainer, once on the build host (after every change of the converter): `/root/fs2-tools-publish.sh`.
