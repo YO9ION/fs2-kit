@@ -132,6 +132,8 @@ def fill_template(text, v):
             new = setkey(l, "periodic_icao", '"%s"' % v["icao"])
         elif sec == "dashboard":
             new = setkey(l, "bind", '"%s"' % v["bind"]) or setkey(l, "username", '"%s"' % v["user"]) or setkey(l, "password", '"%s"' % v["password"])
+        elif sec == "brew_secondary":
+            new = setkey(l, "rf_export_label", '"%s"' % v["rf_label"])
         elif sec == "proximity_notice":
             new = setkey(l, "flowstation_lat", v["lat"]) or setkey(l, "flowstation_lon", v["lon"])
         out.append(l if new is None else new)
@@ -190,10 +192,19 @@ def main():
     mnc = a.mnc or ask("Mobile network code (MNC)", "9999", tty)
     la = a.la or ask("Location area", "1", tty)
     cc = a.cc or ask("Colour code (0-63)", "1", tty)
-    tz = a.timezone or ask("Timezone", system_timezone(), tty)
+    tz = a.timezone
+    while True:
+        tz = tz or ask("Timezone, written as Continent/City, e.g. Europe/Bucharest", system_timezone(), tty)
+        if os.path.exists("/usr/share/zoneinfo/" + tz) and "/" in tz.strip("/"):
+            break
+        print("  '%s' is not a valid timezone name. Use the form Europe/Bucharest (see: timedatectl list-timezones)." % tz)
+        if a.timezone:
+            sys.exit(1)
+        tz = None
     cell_text = a.cell_text or ask("Text shown on the radios' home screen (e.g. your city + cell name)", "FS2 CELL", tty)
     loc = a.location or ask("Station location 'latitude, longitude' (used for weather and Proximity Notice; Enter = skip)", "0, 0", tty)
     lat, lon = parse_latlon(loc)
+    rf_label = re.sub(r"[^a-z0-9]+", "-", cell_text.lower()).strip("-")[:30] or "fs2-cell"
     city = a.city or ask("City or place name spoken in the announcements (\"TETRA Romania, nod <city>\")", None, tty)
     pp = a.private_port or ask("Private relay port given to you by the network administrator (Enter = none yet)", "0", tty)
     if not re.fullmatch(r"\d{1,5}", pp) or int(pp) > 65535:
@@ -225,7 +236,7 @@ def main():
 
     tpl, tpl_level = fetch_template()
     text = fill_template(tpl, dict(
-        tx=tx_hz, rx=rx_hz, sdr=sdr, mcc=mcc, mnc=mnc, band=band, carrier=carrier, la=la, cc=cc, tz=tz,
+        tx=tx_hz, rx=rx_hz, sdr=sdr, mcc=mcc, mnc=mnc, band=band, carrier=carrier, la=la, cc=cc, tz=tz, rf_label=rf_label,
         fo=freq_offset, duplex=duplex_lines, cell_text=cell_text, lat=lat, lon=lon, icao=icao,
         bind=a.dash_bind, user=user, password=password, pport=int(pp)))
 
@@ -251,6 +262,7 @@ def main():
     print("\nConfig written to %s" % out)
     print("Dashboard:  http://%s:8080   user: %s   password: %s" % (ip, user, password))
     print("Write the password down now; it is stored only in the config file.")
+    print("Your station name on the shared page: %s   (tell the administrator, with your frequencies)" % rf_label)
     print("Start / restart:  sudo systemctl restart fs2")
     if not a.no_announce:
         tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fs2-announce")
