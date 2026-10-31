@@ -19,6 +19,7 @@ ANN_DIR = os.path.join(PREFIX, "announcements")
 CONF = os.path.join(BASE, "announce.json")
 EDGE = os.path.join(BASE, "venv", "bin", "edge-tts")
 CONVERT = os.path.join(PREFIX, "bin", "convert_one")
+CODEC_LIB = os.path.join(PREFIX, "bin", "libtetra-codec.so")
 VOICE = "ro-RO-AlinaNeural"
 RATE = "-10%"
 PEAK_DB = -5.2
@@ -162,8 +163,20 @@ def forecast_text(city, d):
 
 
 # ---------- audio ----------
+def tool_env():
+    e = dict(os.environ)
+    e["LD_LIBRARY_PATH"] = os.path.join(PREFIX, "bin") + (":" + e["LD_LIBRARY_PATH"] if e.get("LD_LIBRARY_PATH") else "")
+    return e
+
+
 def run(cmd, timeout):
-    subprocess.run(cmd, check=True, timeout=timeout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        subprocess.run(cmd, check=True, timeout=timeout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=tool_env())
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or b"").decode("utf-8", "replace").strip()[-600:]
+        die("this step failed (exit %s): %s\n%s\nSend this message to the network administrator." % (e.returncode, " ".join(cmd[:2]), err or "(no message; try running the command by hand to see the reason)"))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        die("this step failed: %s (%s)" % (" ".join(cmd[:2]), e))
 
 
 def process(mp3, pcm, delay_ms=0, pad_s=0.8):
@@ -322,10 +335,8 @@ def http_get(url, limit):
         return r.read(limit)
 
 
-def ensure_convert():
-    if os.access(CONVERT, os.X_OK):
-        return
-    arch = os.uname().machine
+def fetch_tool(name, dest):
+    """Download one signed file from the update server (checksum + Ed25519 signature) and install it at dest."""
     try:
         base = open(os.path.join(PREFIX, "fs2-update.url")).read().split("\n")[0].strip().rstrip("/")
         pub = open(os.path.join(PREFIX, "fs2-update.pubkey")).read().strip()
@@ -333,8 +344,7 @@ def ensure_convert():
         die("update server address/key not found in %s (run install.sh again)" % PREFIX)
     if not base.startswith("https://") and os.environ.get("FS2_ALLOW_LOCAL") != "1":
         die("update server address must start with https://")
-    name = "convert_one-" + arch
-    print("Downloading the speech converter (%s) from the update server..." % name)
+    print("Downloading %s from the update server..." % name)
     try:
         man = json.loads(http_get(base + "/" + name + ".json", 65536))
         body = http_get(base + "/" + name, 60_000_000)
@@ -342,13 +352,26 @@ def ensure_convert():
         die("cannot download %s: %s" % (name, e))
     sha = hashlib.sha256(body).hexdigest()
     if sha != man.get("sha256", "").lower() or not verify(("FS2-TOOL-1\n%s\n%s\n" % (name, sha)).encode(), man["sig"], pub):
-        die("the downloaded converter failed the signature/checksum check. Nothing was installed.")
-    os.makedirs(os.path.dirname(CONVERT), exist_ok=True)
-    tmp = CONVERT + ".new"
+        die("%s failed the signature/checksum check. Nothing was installed." % name)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = dest + ".new"
     open(tmp, "wb").write(body)
     os.chmod(tmp, 0o755)
-    os.replace(tmp, CONVERT)
-    print("Speech converter installed.")
+    os.replace(tmp, dest)
+
+
+def ensure_convert():
+    arch = os.uname().machine
+    if not os.access(CONVERT, os.X_OK):
+        fetch_tool("convert_one-" + arch, CONVERT)
+    if not os.path.exists(CODEC_LIB):
+        fetch_tool("libtetra-codec.so-" + arch, CODEC_LIB)
+    # self-test: the converter must start
+    r = subprocess.run([CONVERT], capture_output=True, env=tool_env())
+    msg = (r.stderr or b"").decode("utf-8", "replace")
+    if "error while loading shared libraries" in msg or r.returncode == 127:
+        die("the speech converter cannot start on this system:\n  " + msg.strip()[-300:] + "\nSend this message to the network administrator.")
+    print("Speech converter ready.")
 
 
 def ensure_edge():

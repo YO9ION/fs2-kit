@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """fs2-setup - create /opt/fs2/config.toml from the template (asks a few questions)."""
-import argparse, os, re, secrets, shutil, socket, subprocess, sys, time
+import argparse, json, os, re, secrets, shutil, socket, subprocess, sys, time
 
 PREFIX = os.environ.get("FS2_PREFIX", "/opt/fs2")
 
@@ -163,6 +163,24 @@ def fill_template(text, v):
         lines[start] = "# (Neighbour cell block disabled: remove the # signs and edit it when you run a second cell.)\n" + lines[start]
     return "\n".join(lines)
 
+def write_station_files(cfgdir, city, lat, lon, label):
+    """station.json (the city, for the card name on the shared page) and a ready-made address_display.json
+    (address + weather on the home screen, home position = the station location). Existing files are never changed."""
+    sj = os.path.join(cfgdir, "station.json")
+    if not os.path.exists(sj):
+        with open(sj, "w", encoding="utf-8") as f:
+            json.dump({"city": city}, f, ensure_ascii=False)
+    ad = os.path.join(cfgdir, "address_display.json")
+    if not os.path.exists(ad):
+        la, lo = float(lat), float(lon)
+        have = abs(la) > 0.01 or abs(lo) > 0.01
+        with open(ad, "w", encoding="utf-8") as f:
+            json.dump({"enabled": have, "refresh_s": 15, "movement_threshold_m": 25, "issi_filter": [],
+                       "user_agent": "FS2-station (%s)" % label, "weather_enabled": have, "weather_interval_min": 10,
+                       "weather_home_lat": la if have else 0.0, "weather_home_lon": lo if have else 0.0},
+                      f, ensure_ascii=False, indent=1)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--sdr", choices=sorted(SDR_LINES), help="radio board type")
@@ -251,6 +269,7 @@ def main():
         f.write(text)
     # Remember which config changes are already included, so Update only applies newer ones.
     open(os.path.join(os.path.dirname(out) or ".", "fs2-config.level"), "w").write("%d\n" % tpl_level)
+    write_station_files(os.path.dirname(out) or ".", city, lat, lon, rf_label)
     fb = out + ".fallback"
     if not os.path.exists(fb):
         shutil.copy2(out, fb)

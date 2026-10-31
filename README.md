@@ -44,6 +44,8 @@ Press **Update** in the FS2 dashboard when it shows a newer version. The program
 version, checks it, keeps the old one as `/opt/fs2/fs2.prev`, and restarts by itself.
 Manual way: `cd fs2-kit && git pull && sudo bash install.sh --binary-only`.
 
+Announcements: in the dashboard open **Announcements** and press **Install / repair** (it installs the converter and voice tool and makes the audio for your city; the log is shown live).
+
 ## More
 
 - [Radio boards and driver notes](docs/SDR-BOARDS.md)
