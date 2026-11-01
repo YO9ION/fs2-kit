@@ -41,6 +41,43 @@ detect_sdr() {
   echo ""
 }
 
+
+pluto_firmware_check() {
+  # The PlutoSDR must run a TIMESTAMPING firmware. Check what the board reports and, if the file is
+  # published (PLUTO_FW_URL), offer to flash it. NOT tested on hardware: flashing is always asked first.
+  apt-get install -y --no-install-recommends libiio-utils >/dev/null 2>&1 || true
+  local fw=""
+  for u in ip:192.168.2.1 ip:pluto.local; do
+    fw="$(iio_attr -u "$u" -C fw_version 2>/dev/null | head -n1 || true)"; [ -n "$fw" ] && break
+  done
+  if [ -z "$fw" ]; then
+    warn "Could not read the PlutoSDR firmware version (board not reachable at 192.168.2.1). Check docs/PLUTO.md."
+    return 0
+  fi
+  if printf '%s' "$fw" | grep -qi timestamp; then say "PlutoSDR firmware supports timestamping: $fw"; return 0; fi
+  warn "PlutoSDR firmware has NO timestamping ($fw): radios will not register."
+  if [ -z "${PLUTO_FW_URL:-}" ]; then
+    warn "Flash a timestamping firmware first (links in docs/PLUTO.md), then run this installer again."; return 0
+  fi
+  local go="no"
+  if [ "${FS2_FLASH_FW:-0}" = "1" ]; then go="yes"
+  else go="$(ask "Flash the timestamping firmware now? Do NOT unplug the board for 5 minutes afterwards. Type yes:")"; fi
+  [ "$go" = "yes" ] || { warn "Skipping the firmware flash."; return 0; }
+  local z=/tmp/pluto-fw.zip f=/tmp/pluto.frm
+  apt-get install -y --no-install-recommends unzip >/dev/null 2>&1 || true
+  curl -fL --retry 3 -o "$z" "$PLUTO_FW_URL" || { warn "Firmware download failed."; return 0; }
+  [ -z "${PLUTO_FW_SHA256:-}" ] || [ "$(sha256sum "$z" | awk '{print $1}')" = "$PLUTO_FW_SHA256" ] || { warn "Firmware checksum mismatch. Not flashing."; return 0; }
+  rm -f "$f"; unzip -o -j "$z" pluto.frm -d /tmp >/dev/null 2>&1 && [ -s "$f" ] || { warn "pluto.frm not found in the firmware zip."; return 0; }
+  local dev mnt=/mnt/plutofw
+  dev="$(lsblk -rno PATH,LABEL 2>/dev/null | awk 'tolower($2) ~ /^pluto/ {print $1; exit}')"
+  [ -n "$dev" ] || { warn "PlutoSDR mass-storage drive not found. Copy $f to it by hand (docs/PLUTO.md)."; return 0; }
+  mkdir -p "$mnt"; mount "$dev" "$mnt" || { warn "Could not mount $dev"; return 0; }
+  cp "$f" "$mnt/pluto.frm" && sync
+  umount "$mnt" 2>/dev/null || true
+  say "Firmware copied. The board now flashes itself and restarts (about 4 minutes). Do not unplug it. Run this installer again afterwards."
+  exit 0
+}
+
 install_binary() {
   say "Installing the FS2 program"
   install -d -m 755 "$PREFIX" "$PREFIX/log" "$PREFIX/share"
@@ -97,7 +134,21 @@ apt-get update
 apt-get install -y --no-install-recommends ca-certificates curl file python3 python3-venv openssl ffmpeg usbutils libsoapysdr0.8 soapysdr-tools
 case "$SDR" in
   sx) apt-get install -y --no-install-recommends git make g++ cmake libsoapysdr-dev libasound2-dev alsa-utils i2c-tools ;;
-  pluto) apt-get install -y --no-install-recommends soapysdr-module-plutosdr ;;
+  pluto)
+    # Pluto needs the PATCHED SoapyPlutoSDR (hardware timestamping). The stock Debian/pothosware
+    # driver does not work: the carrier is on air but radios cannot synchronise. Firmware must also
+    # be a timestamping build (Pluto: pgreenland/plutosdr-fw, Pluto+: wahlm/plutosdr-fw-timestamp).
+    say "building the timestamping SoapyPlutoSDR driver (pgreenland, branch sdr_gadget_timestamping), 3-5 minutes"
+    apt-get install -y --no-install-recommends git make g++ cmake libsoapysdr-dev libiio-dev libad9361-dev
+    SRC=/usr/local/src/SoapyPlutoSDR
+    rm -rf "$SRC"; git clone -b sdr_gadget_timestamping https://github.com/pgreenland/SoapyPlutoSDR.git "$SRC"
+    # 2bbf771 = the build that was verified working (module version 0.2.1-2bbf771); fall back to branch head if it is gone
+    git -C "$SRC" checkout 2bbf771 2>/dev/null || warn "pinned driver commit 2bbf771 not found, using the branch head"
+    mkdir -p "$SRC/build"
+    ( cd "$SRC/build" && cmake .. && make -j2 && make install && ldconfig )
+    echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="0456", ATTR{idProduct}=="b673", MODE="666"' > /etc/udev/rules.d/90-libiio_pluto.rules
+    udevadm control --reload-rules 2>/dev/null || true; udevadm trigger 2>/dev/null || true
+    pluto_firmware_check ;;
   lime) apt-get install -y --no-install-recommends soapysdr-module-lms7 ;;
 esac
 

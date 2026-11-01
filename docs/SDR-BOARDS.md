@@ -3,7 +3,7 @@
 | Board | Status | Driver |
 |---|---|---|
 | SX1255 board (SXceiver) | tested | SoapySX, built from https://github.com/tejeez/sxxcvr by `install.sh` |
-| PlutoSDR | not tested | Debian package `soapysdr-module-plutosdr` |
+| PlutoSDR / Pluto+ | working on one station (see docs/PLUTO.md) | needs TIMESTAMPING firmware (Pluto: pgreenland/plutosdr-fw, Pluto+: wahlm/plutosdr-fw-timestamp) and the patched driver pgreenland/SoapyPlutoSDR branch sdr_gadget_timestamping (the installer builds it). Stock firmware or stock driver: carrier visible, radios never register |
 | LimeSDR | not tested | Debian package `soapysdr-module-lms7` |
 
 For PlutoSDR and LimeSDR the installer only installs the driver and sets `device = "driver=..."`.
